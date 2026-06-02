@@ -61,7 +61,7 @@ class CompactAddress {
   }
 
   @override
-  int get hashCode => toContactEncodingString().hashCode;
+  int get hashCode => address.hashCode ^ port;
 
   @override
   bool operator ==(other) {
@@ -127,14 +127,20 @@ class CompactAddress {
     if (message.length - offset < 6) {
       return null;
     }
-    var l = Uint8List(4);
-    for (var i = 0; i < l.length; i++) {
-      l[i] = message[offset + i];
+    // Copy the 4 address bytes; sublistView avoids the manual loop when the
+    // source is already a typed list, otherwise fall back to a tight copy.
+    Uint8List l;
+    if (message is Uint8List) {
+      l = Uint8List.sublistView(message, offset, offset + 4);
+    } else {
+      l = Uint8List(4);
+      l[0] = message[offset];
+      l[1] = message[offset + 1];
+      l[2] = message[offset + 2];
+      l[3] = message[offset + 3];
     }
-    var b = Uint8List(2);
-    b[0] = message[offset + 4];
-    b[1] = message[offset + 5];
-    var port = ByteData.view(b.buffer).getUint16(0);
+    // Big-endian port via bit-ops — no extra Uint8List/ByteData allocation.
+    var port = (message[offset + 4] << 8) | message[offset + 5];
     return CompactAddress(
         InternetAddress.fromRawAddress(l, type: InternetAddressType.IPv4),
         port);
@@ -146,14 +152,17 @@ class CompactAddress {
     if (message.length - offset < 18) {
       return null;
     }
-    var l = Uint8List(16);
-    for (var i = 0; i < l.length; i++) {
-      l[i] = message[offset + i];
+    Uint8List l;
+    if (message is Uint8List) {
+      l = Uint8List.sublistView(message, offset, offset + 16);
+    } else {
+      l = Uint8List(16);
+      for (var i = 0; i < 16; i++) {
+        l[i] = message[offset + i];
+      }
     }
-    var b = Uint8List(2);
-    b[0] = message[offset + 16];
-    b[1] = message[offset + 17];
-    var port = ByteData.view(b.buffer).getUint16(0);
+    // Big-endian port via bit-ops — no extra Uint8List/ByteData allocation.
+    var port = (message[offset + 16] << 8) | message[offset + 17];
     return CompactAddress(
         InternetAddress.fromRawAddress(l, type: InternetAddressType.IPv6),
         port);
@@ -210,15 +219,25 @@ int randomInt(int max) {
   return math.Random().nextInt(max);
 }
 
+/// Lowercase hex nibble char codes ('0'..'9','a'..'f'), indexed 0..15.
+const _hexNibbleCharCodes = <int>[
+  48, 49, 50, 51, 52, 53, 54, 55, 56, 57, // 0-9
+  97, 98, 99, 100, 101, 102 // a-f
+];
+
 ///
 /// Transform buffer to hex string
 String transformBufferToHexString(List<int> buffer) {
-  var str = buffer.fold<String>('', (previousValue, byte) {
-    var hex = byte.toRadixString(16);
-    if (hex.length != 2) hex = '0$hex';
-    return '$previousValue$hex';
-  });
-  return str;
+  // Build all char codes in one pass (O(L)) then a single String allocation,
+  // instead of O(L^2) string concatenation via fold.
+  var codes = Uint8List(buffer.length * 2);
+  var j = 0;
+  for (var i = 0; i < buffer.length; i++) {
+    var byte = buffer[i] & 0xff;
+    codes[j++] = _hexNibbleCharCodes[byte >> 4];
+    codes[j++] = _hexNibbleCharCodes[byte & 0x0f];
+  }
+  return String.fromCharCodes(codes);
 }
 
 Future<List<Uri>?> _getTrackerFrom(String trackerUrlStr,
