@@ -5,14 +5,17 @@ import 'dart:math' as math;
 
 import 'dart:typed_data';
 
-/// Checks if you are awesome. Spoiler: you are.
+/// A compact representation of an IP address paired with a port.
+///
+/// This is the wire format used by the BitTorrent protocol for peer and node
+/// addresses: a fixed-length sequence of address bytes followed by two bytes
+/// of big-endian port.
 class CompactAddress {
   final InternetAddress address;
   final int port;
   String? _contactEncodingStr;
 
   CompactAddress(this.address, this.port) {
-    //assert(address != null && port != null, 'address or port can not be null');
     assert(port >= 0 && port <= 65535, 'wrong port');
   }
 
@@ -20,16 +23,16 @@ class CompactAddress {
   ///
   /// The bytes formate is [`ip-bytes`][`port bytes`]
   List<int> toBytes([bool growable = true]) {
-    var l;
     if (growable) {
-      l = <int>[];
+      final l = <int>[];
       l.addAll(address.rawAddress);
       var b = Uint8List(2);
       ByteData.view(b.buffer).setUint16(0, port);
       l.addAll(b);
+      return l;
     } else {
       var len = address.rawAddress.length + 2;
-      l = Uint8List(len);
+      var l = Uint8List(len);
       var i = 0;
       for (; i < len - 2; i++) {
         l[i] = address.rawAddress[i];
@@ -37,8 +40,6 @@ class CompactAddress {
       ByteData.view(l.buffer).setUint16(address.rawAddress.length, port);
       return l;
     }
-
-    return l;
   }
 
   CompactAddress clone() {
@@ -63,9 +64,9 @@ class CompactAddress {
   int get hashCode => toContactEncodingString().hashCode;
 
   @override
-  bool operator ==(b) {
-    if (b is CompactAddress) {
-      return b.address == address && port == b.port;
+  bool operator ==(other) {
+    if (other is CompactAddress) {
+      return other.address == address && port == other.port;
     }
     return false;
   }
@@ -77,17 +78,17 @@ class CompactAddress {
   static List<int> multipleAddressBytes(List<CompactAddress> addresses,
       [bool growable = true]) {
     if (addresses.isEmpty) return <int>[];
-    var l;
     if (growable) {
-      l = <int>[];
-      addresses.forEach((address) {
+      final l = <int>[];
+      for (var address in addresses) {
         l.addAll(address.toBytes(false));
-      });
+      }
+      return l;
     } else {
       var a = addresses[0];
       var len = a.address.rawAddress.length + 2;
-      l = Uint8List(addresses.length * len);
-      var view = ByteData.view((l as Uint8List).buffer);
+      var l = Uint8List(addresses.length * len);
+      var view = ByteData.view(l.buffer);
       for (var i = 0; i < addresses.length; i++) {
         var add = addresses[i];
         for (var j = 0; j < add.address.rawAddress.length; j++) {
@@ -95,8 +96,8 @@ class CompactAddress {
         }
         view.setUint16(i * len + len - 2, add.port);
       }
+      return l;
     }
-    return l;
   }
 
   /// Parse compact bytes to ipv4 address
@@ -169,7 +170,7 @@ class CompactAddress {
           l.add(a);
         }
       } catch (e) {
-        log('Parse IPv4 error:', error: e, name: 'COMMON LIB');
+        log('Parse IPv6 error:', error: e, name: 'COMMON LIB');
       }
     }
     return l;
@@ -181,21 +182,21 @@ class CompactAddress {
 /// [count] is bytes length, if [typedList] is `false` , will return a fixed-length array ([Uint8List]).
 ///
 /// [typedList] default value is `false`
-List<int> randomBytes(count, [bool typedList = false]) {
+List<int> randomBytes(int count, [bool typedList = false]) {
   var random = math.Random();
-  var bytes;
   if (typedList) {
-    bytes = Uint8List(count);
+    var bytes = Uint8List(count);
     for (var i = 0; i < count; i++) {
       bytes[i] = random.nextInt(256);
     }
+    return bytes;
   } else {
-    bytes = <int>[];
+    var bytes = <int>[];
     for (var i = 0; i < count; i++) {
       bytes.add(random.nextInt(256));
     }
+    return bytes;
   }
-  return bytes;
 }
 
 /// return random int number , `0 - max`
@@ -210,8 +211,8 @@ int randomInt(int max) {
 String transformBufferToHexString(List<int> buffer) {
   var str = buffer.fold<String>('', (previousValue, byte) {
     var hex = byte.toRadixString(16);
-    if (hex.length != 2) hex = '0' + hex;
-    return previousValue + hex;
+    if (hex.length != 2) hex = '0$hex';
+    return '$previousValue$hex';
   });
   return str;
 }
@@ -219,19 +220,18 @@ String transformBufferToHexString(List<int> buffer) {
 Future<List<Uri>?> _getTrackerFrom(String trackerUrlStr,
     [int retryTime = 0]) async {
   if (retryTime >= 3) return null;
-  var client;
-  var _access = () async {
+  HttpClient? client;
+  Future<List<Uri>> access() async {
     var alist = <Uri>[];
-    var aurl;
-    aurl = Uri.parse(trackerUrlStr);
+    var aurl = Uri.parse(trackerUrlStr);
     client = HttpClient();
-    var request = await client.getUrl(aurl);
+    var request = await client!.getUrl(aurl);
     var response = await request.close();
     if (response.statusCode != 200) return alist;
-    var stream = await utf8.decoder.bind(response);
+    var stream = utf8.decoder.bind(response);
     await stream.forEach((element) {
       var ss = element.split('\n');
-      ss.forEach((url) {
+      for (var url in ss) {
         if (url.isNotEmpty) {
           try {
             var r = Uri.parse(url);
@@ -240,17 +240,19 @@ Future<List<Uri>?> _getTrackerFrom(String trackerUrlStr,
             //
           }
         }
-      });
+      }
     });
     return alist;
-  };
+  }
+
   try {
-    var re = await _access();
+    var re = await access();
     client?.close();
     return re;
   } catch (e) {
     client?.close();
-    await Future.delayed(Duration(seconds: 15 * math.pow(2, retryTime).toInt()));
+    await Future.delayed(
+        Duration(seconds: 15 * math.pow(2, retryTime).toInt()));
     return _getTrackerFrom(trackerUrlStr, ++retryTime);
   }
 }
