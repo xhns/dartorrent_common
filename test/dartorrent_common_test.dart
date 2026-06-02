@@ -77,6 +77,43 @@ void main() {
       expect(CompactAddress.parseIPv4Addresses(<int>[]), isEmpty);
     });
 
+    test('parseIPv4Addresses respects end and never reads past it', () {
+      // One valid 6-byte block, then 5 trailing bytes that would form an
+      // illegal/garbage address if read. end stops parsing before them.
+      var bytes = [
+        10, 0, 0, 1, 0x1F, 0x90, // 10.0.0.1:8080  (bytes 0..5)
+        99, 99, 99, 99, 99, // trailing junk past end (bytes 6..10)
+      ];
+      var list = CompactAddress.parseIPv4Addresses(bytes, 0, 6);
+      expect(list.length, 1);
+      expect(list[0].toString(), '10.0.0.1:8080');
+    });
+
+    test('parseIPv4Addresses end inside a partial block drops the partial', () {
+      // 1.5 blocks of data, but end allows only the first full block.
+      var bytes = [
+        1, 2, 3, 4, 0, 80, // 1.2.3.4:80
+        5, 6, 7, // partial block (3 bytes) — must be ignored
+      ];
+      var list = CompactAddress.parseIPv4Addresses(bytes, 0, 9);
+      expect(list.length, 1);
+      expect(list[0].toString(), '1.2.3.4:80');
+    });
+
+    test('parseIPv4Addresses with buffer longer than end ignores extra bytes',
+        () {
+      // Buffer has 3 full blocks; end limits parsing to the first 2.
+      var bytes = [
+        10, 0, 0, 1, 0x1F, 0x90, // block 0
+        10, 0, 0, 2, 0x1F, 0x91, // block 1
+        10, 0, 0, 3, 0x1F, 0x92, // block 2 — beyond end, must not be read
+      ];
+      var list = CompactAddress.parseIPv4Addresses(bytes, 0, 12);
+      expect(list.length, 2);
+      expect(list[0].toString(), '10.0.0.1:8080');
+      expect(list[1].toString(), '10.0.0.2:8081');
+    });
+
     test('multipleAddressBytes is inverse of parseIPv4Addresses', () {
       var a = CompactAddress(
           InternetAddress.fromRawAddress(Uint8List.fromList([8, 8, 8, 8]),
@@ -213,6 +250,41 @@ void main() {
     test('transformBufferToHexString length is twice the input', () {
       var bytes = randomBytes(20);
       expect(transformBufferToHexString(bytes).length, 40);
+    });
+  });
+
+  group('public tracker result merging', () {
+    test('all sources exhausted (null) -> empty lists, no cast crash',
+        () async {
+      // Simulate every source running out of retries: each resolves to null.
+      var results = <Future<List<Uri>?>>[
+        Future.value(null),
+        Future.value(null),
+        Future.value(null),
+      ];
+      var emitted = await mergePublicTrackerResults(results).toList();
+      expect(emitted.length, 3);
+      expect(emitted, everyElement(isEmpty));
+    });
+
+    test('mixes null and real results, coalescing null to []', () async {
+      var results = <Future<List<Uri>?>>[
+        Future.value(null),
+        Future.value([Uri.parse('udp://tracker.example:1337')]),
+        Future.value(<Uri>[]),
+      ];
+      var emitted = await mergePublicTrackerResults(results).toList();
+      expect(emitted.length, 3);
+      // Exactly one non-empty list with the single tracker uri.
+      var nonEmpty = emitted.where((e) => e.isNotEmpty).toList();
+      expect(nonEmpty.length, 1);
+      expect(nonEmpty.first.single.toString(), 'udp://tracker.example:1337');
+    });
+
+    test('empty source set yields an empty stream', () async {
+      var emitted =
+          await mergePublicTrackerResults(<Future<List<Uri>?>>[]).toList();
+      expect(emitted, isEmpty);
     });
   });
 }

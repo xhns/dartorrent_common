@@ -105,8 +105,10 @@ class CompactAddress {
       [int offset = 0, int? end]) {
     if (message.isEmpty) return <CompactAddress>[];
     end ??= message.length;
+    if (end > message.length) end = message.length;
     var l = <CompactAddress>[];
-    for (var i = offset; i < end; i += 6) {
+    // Only consume complete 6-byte blocks that lie fully within [offset, end).
+    for (var i = offset; i + 6 <= end; i += 6) {
       try {
         var a = parseIPv4Address(message, i);
         if (a != null) {
@@ -162,8 +164,10 @@ class CompactAddress {
       [int offset = 0, int? end]) {
     if (message.isEmpty) return <CompactAddress>[];
     end ??= message.length;
+    if (end > message.length) end = message.length;
     var l = <CompactAddress>[];
-    for (var i = offset; i < end; i += 18) {
+    // Only consume complete 18-byte blocks that lie fully within [offset, end).
+    for (var i = offset; i + 18 <= end; i += 18) {
       try {
         var a = parseIPv6Address(message, i);
         if (a != null) {
@@ -258,12 +262,28 @@ Future<List<Uri>?> _getTrackerFrom(String trackerUrlStr,
 }
 
 /// Get trackers url list from some awsome website
+///
+/// Each source is fetched independently. When a source exhausts its retries it
+/// resolves to `null`; those are coalesced to an empty list, so an exhausted
+/// source yields `[]` on the stream rather than crashing it with a runtime
+/// cast error.
 Stream<List<Uri>> findPublicTrackers() {
-  var f = <Future<List<Uri>?>>[];
-  f.add(_getTrackerFrom('https://newtrackon.com/api/stable'));
-  f.add(_getTrackerFrom('https://trackerslist.com/all.txt'));
-  f.add(_getTrackerFrom(
-      'https://cdn.jsdelivr.net/gh/ngosang/trackerslist/trackers_all.txt'));
-  f.add(_getTrackerFrom('https://at.raxianch.moe/?type=AT-all'));
-  return Stream.fromFutures(f as Iterable<Future<List<Uri>>>);
+  const urls = <String>[
+    'https://newtrackon.com/api/stable',
+    'https://trackerslist.com/all.txt',
+    'https://cdn.jsdelivr.net/gh/ngosang/trackerslist/trackers_all.txt',
+    'https://at.raxianch.moe/?type=AT-all',
+  ];
+  return mergePublicTrackerResults(urls.map(_getTrackerFrom));
+}
+
+/// Merge a set of tracker-fetch results into a single stream.
+///
+/// Sources that exhaust their retries resolve to `null`; those are coalesced to
+/// an empty list, so an exhausted source yields `[]` rather than crashing the
+/// stream with a cast error. Exposed for testing the null-exhaustion path.
+Stream<List<Uri>> mergePublicTrackerResults(
+    Iterable<Future<List<Uri>?>> results) {
+  var f = results.map((r) async => await r ?? const <Uri>[]).toList();
+  return Stream.fromFutures(f);
 }

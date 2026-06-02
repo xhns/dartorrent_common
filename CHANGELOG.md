@@ -1,3 +1,18 @@
+## 1.1.1
+
+- Fix an unsound runtime cast in `findPublicTrackers`. The list of per-source
+  fetches (`Future<List<Uri>?>`) was cast to `Iterable<Future<List<Uri>>>`;
+  when a source exhausted its retries it resolved to `null`, throwing a
+  `TypeError` inside `Stream.fromFutures` and crashing the whole stream.
+  Null results are now coalesced to an empty list, so an exhausted source
+  surfaces as `[]`. Extracted `mergePublicTrackerResults` to make this path
+  unit-testable.
+- Fix `parseIPv4Addresses` / `parseIPv6Addresses` ignoring the `end` argument:
+  the loop bound and bounds checks used `message.length` instead of `end`, so a
+  trailing partial block could be read past `end`. Parsing now consumes only
+  complete blocks fully contained in `[offset, end)`.
+- Add tests for the null-exhaustion merge path and for `end`-bounded parsing.
+
 ## 1.1.0
 
 - Migrate to Dart 3 (`sdk: '>=3.0.0 <4.0.0'`).
